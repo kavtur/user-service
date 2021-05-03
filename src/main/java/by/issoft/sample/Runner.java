@@ -5,7 +5,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Queue;
+import java.util.Random;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -16,33 +19,19 @@ public class Runner {
     static Statistic statistic = new Statistic();
 
     public static void main(String[] args) throws InterruptedException {
-
 //        http://tutorials.jenkov.com/java-concurrency/index.html
 
-        final StatisticOutputWriter statisticOutputWriter = new StatisticOutputWriter(statistic, 1);
-        statisticOutputWriter.start();
+        final Queue<Integer> queue = new LinkedList<>();
 
-        final List<Thread> cExecutionThreads = IntStream.range(0, 20)
-                .mapToObj(i -> new Thread(() -> {
-                    while (true) {
-                        try {
-                            Thread.sleep(5000);
-                        } catch (InterruptedException e) {
-                            e.printStackTrace();
-                        }
-                        methodC();
-                    }
-                })).collect(Collectors.toList());
-        cExecutionThreads.forEach(Thread::start);
+        final List<Producer> producers = IntStream.range(0, 100)
+                .mapToObj(i -> new Producer(queue))
+                .collect(Collectors.toList());
+        producers.forEach(Thread::start);
 
-        TimeUnit.SECONDS.sleep(1);
-
-        statisticOutputWriter.pause();
-
-        TimeUnit.SECONDS.sleep(3);
-
-        statisticOutputWriter.unpause();
-
+        final List<Consumer> consumers = IntStream.range(0, 5)
+                .mapToObj(i -> new Consumer(queue))
+                .collect(Collectors.toList());
+        consumers.forEach(Thread::start);
     }
 
     public static void methodA() {
@@ -73,8 +62,9 @@ class Statistic {
     @Getter
     private int numberOfMethodCExecutions;
 
-    public void incrementNumberOfMethodCExecutions() {
-        numberOfMethodCExecutions++;
+    public synchronized void incrementNumberOfMethodCExecutions() {
+        int k = numberOfMethodCExecutions + 1;
+        numberOfMethodCExecutions = k;
     }
 
 }
@@ -93,15 +83,13 @@ class StatisticOutputWriter extends Thread {
     @SneakyThrows
     @Override
     public void run() {
-       while (needRun) {
-           // if NumberOfMethodCExecutions > 1000, set to 0 and show alert
-           while (paused) {
-               TimeUnit.SECONDS.sleep(5);
-           }
+        while (needRun) {
+            // if NumberOfMethodCExecutions > 1000, set to 0 and show alert
+            checkIfPausedAndWait();
 
-           log.info("C executed {} time", statistic.getNumberOfMethodCExecutions());
-           TimeUnit.SECONDS.sleep(rateInSeconds);
-       }
+            log.info("C executed {} time", statistic.getNumberOfMethodCExecutions());
+            TimeUnit.SECONDS.sleep(rateInSeconds);
+        }
     }
 
     public void finish() {
@@ -109,13 +97,75 @@ class StatisticOutputWriter extends Thread {
         needRun = false;
     }
 
+    private void checkIfPausedAndWait() throws InterruptedException {
+        while (paused) {
+            waitUntilResume();
+        }
+    }
+
+    private synchronized void waitUntilResume() throws InterruptedException {
+        this.wait();
+    }
+
     public void pause() {
         log.info("pause");
         paused = true;
     }
 
-    public void unpause() {
+    public synchronized void unpause() {
         log.info("unpause");
         paused = false;
+        this.notify();
     }
 }
+
+@Slf4j
+class Producer extends Thread {
+
+    private final Queue<Integer> queue;
+
+    public Producer(Queue<Integer> queue) {
+        this.queue = queue;
+    }
+
+    @SneakyThrows
+    @Override
+    public void run() {
+        while (true) {
+            synchronized (queue) {
+                log.info("producing");
+                IntStream.range(0, 30).forEach(i -> {
+                    queue.offer(new Random().nextInt());
+                });
+                queue.notifyAll();
+            }
+            Thread.sleep(5000);
+        }
+    }
+}
+
+@Slf4j
+class Consumer extends Thread {
+    private final Queue<Integer> queue;
+
+    Consumer(Queue<Integer> queue) {
+        this.queue = queue;
+    }
+
+    @SneakyThrows
+    @Override
+    public void run() {
+        while (true) {
+            Integer element = null;
+            synchronized (queue) {
+                element = queue.poll();
+                while (element == null) {
+                    queue.wait();
+                    element = queue.poll();
+                }
+            }
+            log.info("polled = {}", element);
+        }
+    }
+}
+
